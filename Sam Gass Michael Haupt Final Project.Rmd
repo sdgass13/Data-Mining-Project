@@ -1,0 +1,339 @@
+---
+title: "Final Project"
+author: "Sam Gass and Michael Haupt"
+date: "12/5/2016"
+output: html_document
+---
+#1. Data Manipulation
+
+This project seeks to build models that most accurately predict whether an individual had a favorable view of Donald Trump during the Republican Primaries from August-October 2015. The goal of this project is to produce accurate predictions from the models. 
+
+The data used is a survey conducted by the Pew Research Center from August 27-October 4, 2015. The survey conducted 6000 phone interviews with adults from all 50 states in the US. It asked the respondents various questions regarding their opionions on the US Government, prominent figures in politics, the direction the US is heading, the economy, and general political ideology. The survey also includes a number of demographic questions such as age, race, education, income, etc. 
+
+The response variable that we are using in our models is from the survey question "And is your overall opinion of Donald Trump very favorable, mostly favorable, mostly unfavorable, or very unfavorable". We have recoded the responses into a dummy variable TrumpY, which condenses very favorable and mostly favorable into 1 and mostly unfavorable and very unfavorable into 0. 
+
+The first section of this project delineates the methods behind extracting, subsetting, and cleaning up the data set. In the second section we utilize various unsupervised learning techniques to gain a sense of the distribution of the data and to find variables that may be useful in our predictions. In the third and final section we build various models to predict the outcome (TrumpY) and discuss which models were most effective. 
+
+```{r}
+setwd("~/Documents/Columbia/Fall 2016/Data/Data Mining/Final Project")
+
+library(foreign)
+library(dplyr)
+options(warn = -1)
+
+pew <- read.spss("Governance 2015.public.sav", use.value.labels = FALSE, to.data.frame = TRUE)
+
+#These people answered the Trump question
+pew <- filter(pew, !is.na(pew$qb34b)) 
+
+# Blanks as NA's
+pew[pew==""] <- NA
+
+#Create dummy variables 
+pew$Male <- ifelse(pew$sex == 1, 1, 0)
+pew$Urban <- ifelse(pew$usr == "U  ", 1, 0) 
+pew$Rural <- ifelse(pew$usr == "R  ", 1, 0)
+pew$Suburban <- ifelse(pew$usr == "S  ", 1, 0)
+pew$Republican <- ifelse(pew$party == 1, 1, 0)
+pew$Democrat <- ifelse(pew$party == 2, 1, 0)
+pew$Independent <- ifelse(pew$party == 3, 1, 0)
+pew$White <- ifelse(pew$racem1 == 1, 1, 0)
+pew$Black <- ifelse(pew$racem1 == 2, 1, 0)
+pew$Asian <- ifelse(pew$racem1 == 3, 1, 0)
+pew$Hispanic <- ifelse(pew$racem1 ==7, 1, 0)
+pew$Christian <- ifelse(pew$relig == 1 | pew$relig == 2 | pew$relig == 13, 1, 0)
+pew$Muslim <- ifelse(pew$relig == 6, 1, 0)
+pew$Clinton <- ifelse(pew$qb34c < 3, 1, 0)
+pew$Obama <- ifelse(pew$qb34a < 3, 1, 0)
+pew$Bush <- ifelse(pew$qb34d < 3, 1, 0)
+
+
+#Split response variable into binary. 1 = Favorable view of Trump, 0 = Unfavorable view of Trump
+pew$TrumpY <- ifelse(pew$qb34b < 3, 1, 0)
+
+## Filtering out unneeded variables / NAs--------------------------------------------------
+pew <- pew[ lapply(pew , function(x) sum(is.na(x)) / length(x) ) < 0.1 ]
+pew <- pew[, -c(1:19, 36:48, 79, 94:98, 106:110)]
+pew <- pew[,-64]
+
+detach("package:dplyr", unload=TRUE)
+library(plyr)
+
+#Name variables
+pew<- rename(pew, c(qb34b="Trump", 
+                    q10 = "Follow.Govt",
+                    q14 = "Govt.Content",
+                    q15 = "Govt.Right",
+                    q23 = "Govt.Job",
+                    qb27 = "Pol.Div",
+                    qb28 = "Fut.Div",
+                    q33a = "Rep.Fav",
+                    q33b = "Dem.Fav",
+                    qb34d = "JBush",
+                    qb34e = "Cruz",
+                    qb35 = "Econ.Today",
+                    qb36 = "Econ.Year",
+                    q42a = "Gov.Waste", 
+                    q42b = "Gov.Reg", 
+                    q42c = "Poor.Ben", 
+                    q42d = "Needy", 
+                    q42f = "Discrim", 
+                    q42g = "Immigrant", 
+                    q42h = "Military", 
+                    q42i = "Business", 
+                    q42l = "Citizen",
+                    q42m = "Gay",
+                    qb45 = "Op.US",
+                    qb46 = "US.Conf", 
+                    qb50a = "Rep.Ext", 
+                    qb50b = "Rep.Prob", 
+                    qb50e = "Rep.Man", 
+                    qb51a = "Dem.Ext", 
+                    qb51b = "Dem.Prob", 
+                    qb51e = "Dem.Man", 
+                    q70a = "Fed.Econ", 
+                    q70b = "Fed.Safe", 
+                    q70d = "Fed.Pov",
+                    q70f = "Fed.Env",
+                    q70i = "Fed.Nat",
+                    q70j = "Fed.Food",
+                    q71a = "Play.Econ",
+                    q71b = "Play.Safe",
+                    q71f = "Play.Env", 
+                    q71i = "Play.Nat",
+                    q71j = "Play.Food",
+                    qb72 = "Tax.Share", 
+                    qb73 = "Congress", 
+                    q106o = "Env.Cost", 
+                    q107r = "Gov.Prob", 
+                    q107s = "Comp", 
+                    q107v = "Vote.Say", 
+                    q107z = "Dem.Tax", 
+                    qb108 = "Sucess", 
+                    qb135 = "Right.Wrong"
+                    ))
+
+```
+
+#2. Unsupervised Learning
+
+```{r}
+library(cluster)
+library(pcaPP)
+library(dplyr)
+
+#Create a subset with only demographic predictors-------------------------
+sub <- pew[,c(59:62,64,67:79,83)]
+sub.na <- na.omit(sub)
+sub.na <- scale(sub.na)
+
+sub.clust <- sub.na[,c(1:5,19)]
+
+## Running PCA------------------------------------------------------------
+pca1 <- prcomp(sub.na, scale = TRUE)
+summary(pca1)
+biplot(pca1)
+
+```
+
+The preceeding principal components biplot reveals some generalized information about how the individuals in the survey can be classified. The first two principal components explain 24.6% of the variance. Vectors pointing in the same direction indicate a relationship among these variables. So christian and rural voters, whose vectors point in the same direction, have similar profiles among the included variables. Black and hispanic respondents have similar profiles as well. The response variable, TrumpY, is pointing in the same direction, at similar magnitudes, as Republican and age. Indicating these variables will be useful in predictive models. 
+
+```{r}
+#Clustering all voters by demographics-------------------------------------
+set.seed(202)
+fit1 <- kmeans(sub.na, 2)
+clusplot(sub.na, fit1$cluster, color=TRUE, 
+          labels=2)
+```
+
+This kmeans cluster attempts to divide the respondents into specific cluster profiles. As you can see from the biplot, there are no distinct clusters and the overall distribution is fairly dense so there is a lot of overlap between the two clusters. The observations are plotted in a principal components plot, the two components in this graph explain 25% of the point variability. 
+
+```{r}
+#Eliminate outliers to improve clustering----------------------------------
+sub.clust <- sub.na[c(-1865,-2533,-1385,-2702,-2428,-527,-469),]
+sub.clust2 <- sub[c(-1865,-2533,-1385,-2702,-2428,-527,-469),]
+
+set.seed(14)
+fit3 <- kmeans(sub.clust, 2)
+clusplot(sub.clust, fit3$cluster, color=TRUE, 
+          labels=0)
+aggregate(sub.clust2,by=list(fit3$cluster),FUN= mean)
+```
+
+To create a more accurate clustering, we eliminated outliers from the previous graph. The resulting cluster features less overlap than the first and provides more useful information. Cluster 1 has on average more favorable views of Donald Trump while those in cluster 2 have less favorable views on average. The averages for each cluster reveal the general profile of the observations in each respective cluster. Some of the more important discrepancies are in age, category of area lived in, racial makeup, and ideological makeup. Observations in Cluster 1 are much older on average, live in more rural and suburban areas, have a higher percentage of white individuals, and are more conservative. Observations in Cluster 2 are younger, live in more urban areas, are more diverse (more black and hispanic individuals), and are more liberal on average. 
+
+```{r}
+#Clustering individuals who have favorable view of Trump with age, education, income, attend, ideology
+sub.trump <- filter(sub, TrumpY == 1)
+sub.trump <- na.omit(sub.trump)
+sub.trump <- scale(sub.trump)
+sub.trump <- sub.trump[,-19]
+
+sub.trump2 <- sub.trump[,1:5]
+sub.trump2 <- sub.trump[,-19]
+sub.trump3 <- filter(sub, TrumpY == 1)
+
+set.seed(180)
+fit3 <- kmeans(sub.trump, 2)
+clusplot(sub.trump, fit3$cluster, color=TRUE, 
+          labels=2)
+
+#Eliminate outliers to improve clustering
+
+sub.trump4 <- sub.trump[-c(448,806,801,874,407,554,168,508,691),]
+set.seed(92)
+fit3 <- kmeans(sub.trump4, 2)
+aggregate(sub.trump4,by=list(fit3$cluster),FUN=mean)
+clusplot(sub.trump4, fit3$cluster, color=TRUE, 
+          labels=4)
+```
+
+Here we ran a kmeans cluster analysis on individuals with favorable views of Trump. As you can observe from the plot, there is one very dense cluster and some individual outliers. This clustering reveals a dense core of favorable views from similar individuals and a seperate smaller group that is demographically distinguished from the first dense group but still have favorable views of Donald Trump. Group 1 is younger, poorer (lower income), more urban, and more diverse. Group 2 is older, more educated, has higher income, and is less racially diverse.
+
+
+```{r}
+#Principal Components Analysis on individuals with favorable view of Trump 
+pca.trump<- prcomp(sub.trump)
+biplot(pca.trump)
+```
+
+The preceeding plot is a principal components biplot on demographic characteristics for individuals with a favorable view of Donald Trump. The biplot indicates that the income, education, and suburban variables have similar effects on the profile of observations. In addition the Democrat, Black, and Urban variables have similar effects on overall observation demographic profiles. These two clusters of vectors (suburban, education, income vs democrat, black, urban) are pointing in opposite directions indicating that they have very different effects on observation demographic profiles. 
+
+#3. Modelling
+
+We have chosen a variety of models to predict the TrumpY outcome. The first is a linear model using the step function to choose the variables in the model. The second is a linear model which chooses the variables using the Lasso function. The third is a basic logit model. The fourth is a GAM model which uses smoothing splines on the continuous variables. The fifth is a Randomforest tree based model. The sixth is a Bartmachine model utilizing the variables chosen by the Lasso model. The last two models are two variations of the neural network; the lda model and the mlp model. 
+
+```{r, cache = TRUE}
+library(lars)
+
+pew.na <- na.omit(pew)
+training <- pew.na[1:1500,]
+testing <- pew.na[1501:3000, ]
+
+# Linear model using step function---------------------------------------
+
+ols <- lm(TrumpY ~ . + White*Republican + Black*Democrat + Obama*Black + Econ.Today*White + White*Dem.Tax + attend*White + Bush*White - Trump + Pol.Div*White + Black*Christian + White*Democrat + Military*White + White*US.Conf + Business*White, data = training)
+ols.sub <- step(ols, trace = FALSE)
+round(coef(summary(ols.sub))[,1:3], 2)
+
+yhat_ols <- predict(ols.sub, newdata = testing)
+(SSE_AIC <- mean( (testing$TrumpY - yhat_ols) ^ 2 ))
+
+#Linear model using lasso function--------------------------------------
+
+X <- model.matrix(ols)[ ,-1]
+y <- training$TrumpY
+lasso <- lars(X, y, type = "lasso", trace = FALSE)
+
+test_X <- model.matrix(TrumpY ~ . + White*Republican + Black*Democrat + Obama*Black + Econ.Today*White + White*Dem.Tax + attend*White + Bush*White - Trump + Pol.Div*White + Black*Christian + White*Democrat + Military*White + White*US.Conf + Business*White, data = training)[ ,-1]
+
+yhat_lasso <- predict(lasso, newx = test_X)$fit
+(SSE_AIC <- mean( (testing$TrumpY - yhat_lasso) ^ 2 ))
+
+## Logit Model--------------------------------------------------------
+
+logit_T <- glm(TrumpY ~ . , data = training, family = binomial(link = "logit"))
+y_hat_logit <- fitted(logit_T)
+
+#Gam model------------------------------------------------------------
+
+library(gam)
+gam_m3 <- gam(TrumpY ~ . + s(age) + s(income) + s(educ) + s(attend) + s(ideo), data = training)
+yhat_gam <- predict(gam_m3)
+
+#RandomForest---------------------------------------------------------
+
+training$TrumpY <- as.factor(ifelse(training$Trump == 1, "Yes", "No"))
+testing$TrumpY <- as.factor(ifelse(testing$Trump == 1, "Yes", "No"))
+
+library(randomForest)
+bagged <- randomForest(TrumpY ~ ., data = training, 
+                       mtry = ncol(training)-1, importance = TRUE)
+bagged
+
+## BartMachine Model------------------------------------------------
+
+stopifnot(require(bartMachine))
+set_bart_machine_num_cores(parallel::detectCores())
+
+bart1 <- bartMachine(X = training[, c("Democrat", "Republican", "Rural", "income", "Clinton", "Black", "White", "age", "Muslim", "educ", "Rep.Fav", "JBush", "Govt.Content")], y = training$TrumpY)
+bart1
+
+Bart_Predictions <- predict(bart1, new_data = testing[, c("Democrat", "Republican", "Rural", "income", "Clinton", "Black", "White", "age", "Muslim", "educ", "Rep.Fav", "JBush", "Govt.Content")], type = "class")
+```
+
+```{r}
+# Neural Networks---------------------------------------------------
+
+library(rminer)
+library(nnet)
+mlp <- fit(TrumpY ~ ., data = training, task = "class", model = "mlp")
+lda <- fit(TrumpY ~ ., data = training, task = "class", model = "lda")
+```
+
+#Confusion Matrices
+
+For our analysis, we decided to run linear, logit, GAM, bagged, BartMachine, and neural networking models. For our linear models, we wanted to compare models when using a step function vs using Lasso. Based on the MSE produced from both models, it appears that the linear model with the step function performs better for this dataset. Because the step function performs better than Lasso, we chose to use it when comparing the models on their performance in classification. 
+
+```{r}
+#OLS with step function
+z_ols <- as.integer(yhat_ols > 0.5) 
+table(testing$TrumpY, z_ols)
+```
+
+The OLS model with the variables chosen by the step function predicted 1147 out of 1500 variables correctly for an accuracy rate of 76.5%. It predicted 1058 out of 1342 (78.8%) individuals who had unfavorable views of Donald Trump correctly. It predicted 89 out of 158 (56.3%) individuals with favorable views of Donald Trump correctly. 
+
+```{r}
+#Logit Model
+z_logit <- as.integer(y_hat_logit > 0.5) 
+table(testing$TrumpY, z_logit)
+```
+
+The basic logit model predicted 972 out of 1500 outcomes correctly (64.8%). It predicted 915 out of 1342 individuals with unfavorable views of Donald Trump correctly (68%). The logit model predicted 57 out of 158 (36%) individuals with favorable views of Donald Trump correctly. 
+
+```{r}
+#GAM Model
+z_Gam <- as.integer(yhat_gam > 0.5) 
+table(testing$TrumpY, z_Gam)
+```
+
+The GAM model with smoothing splines applied to the continuous variables predicted 965 out of 1500 variables correctly for an accuracy rate of 64.3%. It predicted 905 out of 1342 (67.4%) individuals who had unfavorable views of Donald Trump correctly. It predicted 60 out of 158 (37.9%) individuals with favorable views of Donald Trump correctly.
+
+```{r}
+#RandomForest
+table(testing$TrumpY,bagged$y)
+```
+
+The Randomforest model predicted 1230 out of 1500 variables correctly for an accuracy rate of 82%. It predicted 1215 out of 1342 (90.5%) individuals who had unfavorable views of Donald Trump correctly. It predicted 15 out of 158 (9.4%) individuals with favorable views of Donald Trump correctly.
+
+```{r}
+#BartMachine
+table(testing$TrumpY, Bart_Predictions)
+```
+
+The BartMachine model predicted very conservatively, predicting the majority of the responses as NO. It predicted 1341 out of 1500 variables correctly for an accuracy rate of 89.3%. It predicted 1339 out of 1342 (99.7%) individuals who had unfavorable views of Donald Trump correctly. It predicted 2 out of 158 (1.2%) individuals with favorable views of Donald Trump correctly.
+
+```{r}
+#Neural Networking MLP
+table(testing$TrumpY, predict(mlp, newdata = testing))
+```
+
+The mlp neural network model predicted 1494 out of 1500 variables correctly for an accuracy rate of 99.6%. It predicted 1337 out of 1342 (99.7%) individuals who had unfavorable views of Donald Trump correctly. It predicted 140 out of 158 (98.1%) individuals with favorable views of Donald Trump correctly.
+
+```{r}
+#Neural Network LDA
+table(testing$TrumpY, predict(lda, newdata = testing))
+```
+
+The lda neural network model predicted 1396 out of 1500 variables correctly for an accuracy rate of 93.1%. It predicted 1329 out of 1342 (99.0%) individuals who had unfavorable views of Donald Trump correctly. It predicted 67 out of 158 (42.4%) individuals with favorable views of Donald Trump correctly.
+
+
+For performance on classification, it appears that the neural networking mlp model outperforms all the other methods since it has the lowest amount of incorrect predictions and predicted with an accuracy rate of 99.6%. The neural networking lda model performs the second best out of the other models with an accuracy rate of 99.0%. It did not, however, predict NO outcomes very accurately with an accuracy rate of around 42.4%. The bartMachine is ranked third with an accuracy rate of 89.3%. The Randomforest model also predicted relatively accurately with an accuracy rate of 82%. For the logit, OLS , and GAM models, they all had accuracy rates below 80%. 
+
+Clearly, the neural network models have outperformed all models in this analysis. They are by far the most accurate and predicted whether respondents to the survey had favorable or unfavorable views of Donald Trump very well. The mlp neural network was the best model out of the two, predicting with an accuracy rate of 99.7%. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
